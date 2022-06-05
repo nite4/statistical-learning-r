@@ -1,0 +1,420 @@
+---
+title: "Uczenie statystyczne w R - projekt zaliczeniowy"
+author: "Magdalena Nitefor"
+date: "kwiecień 2021"
+output: html_document
+---
+
+```{r setup, include=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+library(caTools)
+library(polycor)
+library(utils)
+library(DALEX)
+library(reshape2)
+library(corrplot)
+library(purrr)
+library(lsr)
+library(dplyr)
+library(randomForest)
+library(BBmisc)
+library(tidyr)
+library(MASS)
+library(ggplot2)
+library(ggpubr)
+library(knitr)
+library(kableExtra)
+library(caret)
+library(pROC)
+library(outliers)
+set.seed(2137)
+```
+<style>
+body {
+text-align: justify}
+</style>
+
+## Cel projektu
+
+Celem projektu jest wybranie najlepszego modelu uczenia maszynowego dla wybranych danych. W pierwszej części ma miejsce zapoznanie się ze zbiorem danych oraz tuningowanie hiperparametrów wybranej techniki uczenia maszynowego - metody KNN. W części drugiej zbudowane zostaną modele i wykonana będzie prognoza dla następujących metod ML:
+
+- KNN,
+- metody naiwnej Bayesa,
+- QDA,
+- lasu losowego.
+
+Modele będą uczone na zbiorze uczącym wielkości 75% wszystkich obserwacji, a na pozostałych 25% przetestowana zostanie ich jakość. Na tej podstawie wybrany zostanie najlepszy model.
+
+## Część I
+
+### Dane
+
+Wybrane do projektu dane to zbiór danych HRowych z serwisu kaggle.com pewnej firmy zajmującej się Data Science, która szuka nowych pracowników wśród uczestników jej kursu szkoleniowego. Firma chce na podstawie zebranych danych określić, czy dany uczestnik kursu faktycznie chce się zrekrutować, ponieważ to pomoże ograniczyć czas i koszty zatrudniania nowych pracowników.
+
+Dane zawierają 19 158 obserwacji w 14 kolumnach. Początkowy zestaw zmiennych to:
+
+- `enrollee_id` - identyfikator uczestnika kursu,
+- `city` - zmienna kategoryczna - numer miasta, z którego pochodzi uczestnik,
+- `city_development_index` - indeks rozwoju miasta, z którego pochodzi uczestnik,
+- `gender` - płeć uczestnika,
+- `relevant_experience` - zmienna zerojedynkowa, określająca, czy uczestnik ma doświadczenie w Data Science,
+- `enrolled_university` - zmienna kategoryczna, określająca, czy uczestnik nie jest zapisany (no enrollment), jest zapisany na kurs w niepełnym wymiarze godzin (part-time course) albo jest zapisany na kurs w pełnym wymiarze godzin (full-time course),
+- `education_level` - zmienna kategoryczna, określająca, jakie wykształcenie ma uczestnik,
+- `major_discipline` - zmienna kategoryczna, określająca wiodącą dyscyplinę uczestnika,
+- `experience` - zmienna kategoryczna, określająca, ile lat doświadczenia zawodowego ma uczestnik (od poniżej 1 roku do powyżej 20 lat),
+- `company_size` - zmienna kategoryczna, określająca wielkość firmy, w której obecnie jest zatrudniony uczestnik,
+- `company_type` - zmienna kategoryczna, określająca typ firmy, w której obecnie jest zatrudniony uczestnik,
+- `last_new_job` - zmienna kategoryczna, określająca, ile lat upłynęło od ostatniej zmiany pracy przez uczestnika (od "nigdy" do >4),
+- `training_hours` - liczba godzin kursu, odbyta przez uczestnika,
+- `target` - zmienna zerojedynkowa, określająca, czy dany uczestnik będzie *targetem rekrutacji*.
+
+Co ciekawe, spośród ponad 19 tysięcy potencjalnych kandydatów tylko 4 777 zostało przez firmę zaklasyfikowanych jako target (przekłada się to na niecałe 25%). Wydaje się to być dosyć niewielkim odsetkiem, jednak jeśli weźmiemy pod uwagę, że co czwarty uczestnik kursu jest postrzegany jako potencjalny pracownik tej firmy, perspektywa zmienia się i można ocenić, że dosyć duża część uczestników kursu jest potencjalnymi pracownikami tej firmy. Oznacza to, że zbiór danych jest niezbilansowany.
+
+### Braki danych
+
+Sprawdzenie braków danych wykazało, że dla zmiennych `company_size` i `company_type` brakuje po ponad 35% obserwacji, co spowodowało pozbycie się tych dwóch zmiennych. Dodatkowo pominięto także zmienne `enrollee_id`, `city` oraz `city_development_index` - drugą i trzecią z uwagi na możliwość wystąpienia zbyt silnej dyskryminacji ze względu na miejsce pochodzenia.
+
+Pozostałe braki danych w poszczególnych zmiennych ukszałtowały się na poziomie 0.5-3%, w związku z czym należało podjąć decyzję odnośnie sposobu na ich potraktowanie. Można było rozważyć usunięcie obserwacji z uwagi na liczność zbioru, jednak ciekawą alternatywą jest zastosowanie metody imputacji za pomocą lasu losowego. Zostało to wykonane z użyciem funkcji `mice` z pakietu o tej samej nazwie.
+
+### Dane po preprocessingu
+
+Dla tak przygotowanych danych przedstawione zostaną statystyki opisowe. Poniżej przedstawionych zostało pierwszych 5 wierszy danych.
+
+```{r, echo=FALSE}
+data <- read.csv("data_imputed.csv", header = TRUE, sep = ",")
+kable(data[1:5,],booktabs=TRUE)%>%kable_styling(latex_options ="striped")
+```
+
+Aby zapoznać się z danymi, przygotowane zostały statystyki opisowe oraz histogramy dla poszczególnych zmiennych z uwzględnieniem grupowania według wartości zmiennej `target`.
+
+```{r,fig.align='center',echo=FALSE}
+kable(summary(data[,1:3]),booktabs=TRUE)%>%kable_styling(latex_options ="striped")
+kable(summary(data[,4:6]),booktabs=TRUE)%>%kable_styling(latex_options ="striped")
+kable(summary(data[,7:9]),booktabs=TRUE)%>%kable_styling(latex_options ="striped")
+#płeć
+g <- ggplot(data.frame(data$gender),aes(x=data$gender)) +
+  geom_bar(aes(fill=factor(data$target)),width=0.75) +
+  labs(title="Gender", x=" ", y="Count") + 
+  theme_minimal() + labs(fill="Target")
+
+#uni
+u <- ggplot(data.frame(data$enrolled_university),aes(x=data$enrolled_university)) +
+  geom_bar(aes(fill=factor(data$target)),width=0.75) +
+  labs(title="Enrolled University", x=" ", y="Count") + 
+  theme_minimal() + labs(fill="Target") +
+  scale_x_discrete(labels=c("Full time course"="full-time \n course", "Part time course" = "part-time \n course","no_enrollment" = "not enrolled"))
+
+#wykształcenie
+ed <- ggplot(data.frame(data$education_level),aes(x=data$education_level)) +
+  geom_bar(aes(fill=factor(data$target)),width=0.75) +
+  labs(title="Education Level", x=" ", y="Count") + 
+  theme_minimal() + labs(fill="Target") +
+  scale_x_discrete(labels=c("High School"="High \n School","Primary School"="Primary \n School")) + theme(axis.text.x=element_text(angle=90))
+
+#wiodąca dyscyplina
+md <- ggplot(data.frame(data$major_discipline),aes(x=data$major_discipline)) +
+  geom_bar(aes(fill=factor(data$target)),width=0.75) +
+  labs(title="Major Discipline", x=" ", y="Count") + 
+  theme_minimal() + labs(fill="Target") + theme(axis.text.x=element_text(angle=90)) +
+  scale_x_discrete(labels=c("Business Degree"="Business \n Degree", "No Major" = "No \n Major"))
+
+#lata doświadczenia
+ex <- ggplot(data.frame(data$experience),aes(x=data$experience)) +
+  geom_bar(aes(fill=factor(data$target)),width=0.75) +
+  labs(title="Years of Experience", x=" ", y="Count") + 
+  theme_minimal() + labs(fill="Target")
+
+#kiedy ostatnio zmieniał pracę
+l <- ggplot(data.frame(data$last_new_job),aes(x=data$last_new_job)) +
+  geom_bar(aes(fill=factor(data$target)),width=0.75) +
+  labs(title="Last New Job", x=" ", y="Count") + 
+  theme_minimal() + labs(fill="Target")
+
+#godziny szkoleń
+h <- ggplot(data.frame(data$training_hours), aes(x=data$training_hours)) +
+  labs(title="Training Hours", x=" ", y="Count") +
+  geom_bar(col="darkturquoise") + theme_minimal()
+
+hb <- ggplot(data.frame(data$training_hours), aes(x=data$training_hours)) +
+  geom_boxplot(col="darkturquoise") + labs(title="Training Hours", x=" ", y=" ") + theme_minimal()
+
+ggarrange(g,u,ed,md, ncol=2,nrow=2)
+ggarrange(ex,l,h,hb, ncol=2,nrow=2)
+```
+
+Z danych wynika, że wśród uczestników:
+
+- 93.9% to mężczyźni,
+- 72% posiada doświadczenie zawodowe w Data Science,
+- 73.4% nie jest studentami,
+- 61.9% ma tytuł licencjata,
+- dla 88.7% wiodąca dyscyplina to STEM (Science, Technology, Engineering and Mathematics),
+- 28.6% ma między 5 a 9 lat doświadczenia zawodowego,
+- 43% zmieniało pracę w ostatnim roku,
+- średnio odbyto ponad 65h kursu.
+
+Można zauważyć, że wszystkie cechy dotyczące ogółu uczestników są też przekładalne na `target`, tzn. najwięcej jest mężczyzn etc.
+
+Kolejnym etapem jest zbadanie korelacji pomiędzy poszczególnymi zmiennymi. Z uwagi na to, że zmienne są różnych typów (kategoryczne i jedna liczbowa), wykorzystana została funkcja `hetcor` z pakietu `polycor`.
+```{r, echo=FALSE, fig.align='center', warning=FALSE}
+library(ggcorrplot)
+data <- read.csv("data_imputed_copy.csv", header = TRUE, sep=",")
+
+correlations <- hetcor(data)
+corrplot(as.matrix(correlations), method="square", type="lower",
+         col=colorRampPalette(c("turquoise","white","salmon"))(200), tl.col="black",
+         addCoef.col="darkgrey", number.cex= 7/ncol(as.matrix(correlations)), tl.cex=0.75)
+```
+
+Jak widać, otrzymane wartości korelacji są bardzo niskie - praktycznie zerowe - szczególnie biorąc pod uwagę korelacje zmiennych objaśniających ze zmienną objaśnianą (`target`). Jeżeli najsilniejsza wyznaczona korelacja wynosi -0.18 (`target` i `experience`), zasadniczo trudno mówić o występowaniu jakiejkolwiek zależności. W szczególności może to sugerować, że tworzonych modeli nie będzie cechować dobra dokładność czy jakość prognostyczna.
+
+Ze względu na to, że tylko jedna zmienna jest typu liczbowego, a pozostałe są kategoryczne, można rozważać jedynie występowanie co najwyżej umiarkowanej zależności monotonicznej. Rozważmy korelacje powyżej 0.2, dla których można stwierdzić istnienie słabej lub umiarkowanej zależności monotonicznej:
+
+- umiarkowanej pomiędzy `last_new_job` i `experience`,`experience` i `education_level`, `experience`i `relevant_experience` oraz  `education_level` i `relevant_experience`, natomiast słabej pomiędzy `last_new_job` i `education_level`, `last_new_job` i `relevant_experience` oraz `education_level`i `relevant_experience`,
+- umiarkowanej odwrotnej pomiędzy `enrolled_university` i `relevant_experience` (posiadaniem lub nie doświadczenia zawodowego) (-0.38), takiej samej pomiędzy `enrolled_university` i `experience` (przedziałem lat doświadczenia zawodowego) oraz słabej odwrotnej pomiędzy `enrolled_university` i `last_new_job`.
+
+Spośród wyżej wymienionych zgodna z intuicją jest przede wszystkim dodatnia umiarkowana zależność pomiędzy faktem posiadania doświadczenia w Data Science a liczbą lat doświadczenia zawodowego (wyrażoną jako przedział, np. 10-14 etc.; korelacja 0.34). Dodatkowo najsilniejsza zależność (choć nadal umiarkowana) została wykryta pomiędzy latami doświadczenia a tym, ile lat temu uczestnik kursu ostatni raz zmieniał pracę (korelacja 0.47) - ta zależność również wydaje się intuicyjna, ponieważ zwykle osoby z większym doświadczeniem mają tendencję do pracowania dłużej w tym samym miejscu (a więc do rzadszego zmieniania pracy).
+
+Z kolei na dwie najsilniejsze odwrotne zależności monotoniczne można spojrzeć następująco: bycie zapisanym na kurs uniwesytecki lub studia "nie sprzyja" zdobywaniu doświadczenia zawodowego (korelacja -0.34), a co za tym idzie, trudniej jest posiadać odpowiednie doświadczenie zawodowe (korelacja -0.38).
+
+## Tuningowanie hiperparametrów w metodzie KNN
+
+Przed przystąpieniem do zasadniczej części procedury wartości zmiennej `training_hours`
+zostały znormalizowane. Nie trzeba było wykonywać tej procedury dla pozostałych zmiennych, gdyż wszystkie są typami kategorycznymi. Przeprowadzono również test Grubbsa na obecność outlierów w zmiennej `training_hours`, jednak nie wykryto obserwacji odstających.
+```{r, echo=FALSE, warning=FALSE, results="hide"}
+#normalizacja danych
+data$training_hours <- normalize(data$training_hours, method = "standardize", range = c(0, 1), margin = 1L, on.constant = "quiet")
+make.names(data)~.
+
+data$target <- ifelse(data$target=="1","Yes","No")
+```
+
+Następnie dane zostały podzielone na zbiór uczący i testowy (odpowiednio 75% i 25% obserwacji).
+```{r, echo=FALSE, warning=FALSE}
+#podział danych na uczące i testowe
+div <- createDataPartition(data$target, p = 0.75, list = FALSE)
+train  <- data[div,]
+train$target <- as.factor(train$target)
+test <- data[-div,]
+test$target <- as.factor(test$target)
+```
+
+Tuningowanym hiperparametrem jest liczba sąsiadów, rozważana jako liczby nieparzyste z przedziału [3;39].
+
+Tworzone są modele walidowane 5-krotną CV. Dodatkowo wyznaczane są wartości dokładności (ACC) i AUC dla zbioru testowego.
+```{r, echo=FALSE, warning=FALSE, fig.align='center',inclue=TRUE,results=FALSE, message=FALSE}
+#KNN z walidacją krzyżową 80/20
+accuracies <- c()
+sequence <- seq(3,39,by=2)
+aucs <- c()
+for (i in seq(3,39,by=2))
+{
+  knn_model3 <- train(target~., data=train, method="knn",
+                      trControl=trainControl(method="cv", number=5), tuneGrid=data.frame(k=i))
+  knn_pr_3 <- predict(knn_model3, test)
+  m <- confusionMatrix(knn_pr_3,test$target)$table
+  acc <- (m[1,1]+m[2,2])/sum(m)
+  accuracies <- append(accuracies,acc)
+  aucs <- append(aucs,roc(knn_pr_3, as.ordered(test$target))$auc)
+}
+accs <- data.frame(cbind(sequence,accuracies))
+aucs2 <- data.frame(cbind(sequence,aucs))
+plot(accs, col="darkturquoise", xlab="k", ylab="accuracies", type="l")
+plot(aucs2, col="salmon", xlab="k", ylab="AUC", type="l")
+
+```
+
+Wraz ze wzrostem liczby sąsiadów zauważalna jest poprawa wartości ACC i AUC. Jednak  AUC nie przekraczające nawet 65% jest wynikiem tylko niewiele lepszym od zwykłego rzutu monetą. Dodatkowo, ani przeciętna dokładność na poziomie 73.98%, ani przeciętne AUC na poziomie 60.18%, nie są szczególnie zadowalającymi wynikami.
+
+Maksymalne wartości, zarówno dla ACC jak i AUC, zostały wyznaczone dla $k=37$ sąsiadów. Tak duże $k$, potrzebne do osiągnięcia optymalnej na rozważanym przedziale dokładności i AUC, może wynikać z faktu, że zbiór danych jest niezbilansowany.
+
+## Część II
+
+Ta część projektu jest poświęcona wybranym technikom ML. Zadaniem jest wybranie najlepszego modelu dla wybranych danych spośród czterech rozważanych.
+
+### Metoda k-najbliższych sąsiadów
+
+Jest to dosyć podstawowa metoda klasyfikacji. Polega ona na wyznaczeniu $k$-najbliższych sąsiadów obiektu (według wybranej miary odległości) i dokonaniu klasyfikacji w oparciu o większość spośród najbliższych sąsiadów obiektu:
+
+$$\hat{f}(x_0)=\frac{1}{k}\sum_{x_i \in \mathcal{N}_0} y_i$$
+
+gdzie:
+- $x_0$ - obiekt klasyfikacji,
+- $\hat{f}(x_0)$ - estymacja dla obiektu $x_0$,
+- $k$ - liczba sąsiadów, oraz
+- $\mathcal{N}_0$ - zbiór $k$-najbliższych sąsiadów obiektu $x_0$.
+
+Istotnym zagadnieniem jest wybór $k$ - w tej części przyjęte zostało $k=37$, zgodnie z wynikiem uzyskanym podczas tuningowania tego hiperparametru w części I. W poprzedniej części projektu rozważano tylko nieparzyste $k$, aby uniknąć skrajnego przypadku, w którym o przyporządkowaniu do danej klasy decyzja podejmowana jest losowo.
+
+```{r echo=FALSE, fig.align='center', message=FALSE, warning=FALSE, inclue=TRUE, results=FALSE}
+knn_model <- train(target~., data=train, method="knn", trControl=trainControl(method="cv", number=5), tuneGrid=data.frame(k=37))
+knn_pr <- predict(knn_model, test)
+
+m <- confusionMatrix(knn_pr,test$target)$table
+m
+acc_knn <- (m[1,1]+m[2,2])/sum(m)
+plot(roc(knn_pr, as.ordered(test$target)), col="darkturquoise",main="ROC Curve for KNN (k=37)", print.auc=TRUE)
+auc_knn <- auc(roc(knn_pr, as.ordered(test$target)))
+```
+
+Osiągnięte AUC na poziomie 63.7% dla zbioru testowego w świetle wyników analizy poprzedniej części projektu nie jest już zaskakujące. Nie jest to wartość szczególnie dobra, jednak jest trochę lepsza niż kompletnie losowe przyporządkowanie.
+
+### Metoda naiwna Bayesa
+
+Jest to metoda oparta na twierdzeniu Bayesa. Skupia się ona na przewidzeniu prawdopodobieństwa przynależności badanego obiektu do danej klasy, zakładając, że zmienne objaśniające są niezależne. Twierdzenie Bayesa ma postać:
+
+$$ P(C|X) = \frac{P(X|C)*P(C)}{P(X)} $$
+gdzie:
+- $P(X)$ - prawdopodobieństwo bycia w stanie $X$,
+- $P(C)$ - prawdopodobieństwo wystąpienia cechy $C$,
+- $P(C|X)$ - prawdopodobieństwo warunkowe wystąpienia cechy $C$ pod warunkiem bycia w stanie $X$, oraz 
+- $P(X|C)$ - prawdopodobieństwo warunkowe bycia w stanie $X$ pod warunkiem wystąpienia cechy $C$.
+
+"Naiwność" tego klasyfikatora wynika z założenia, że zmienne opisujące obiekt są niezależne.
+
+W tym projekcie określane będzie prawdopodobieństwo zostania targetem rekrutacji pod warunkiem znajomości cech: płci, doświadczenia zawodowego, wykształcenia etc. Model został stworzony z wykorzystaniem 5-krotnej walidacji krzyżowej.
+
+```{r, echo=FALSE, warning=FALSE, fig.align='center',inclue=TRUE,results=FALSE, message=FALSE}
+train$target <- ifelse(train$target=="Yes",1,0)
+test$target <- ifelse(test$target=="Yes",1,0)
+
+x <- as.data.frame(train[,-9])
+y <- as.factor(train$target)
+naive_bayes_model <- train(x,y,'nb',trControl=trainControl(method='cv',number=5))
+
+pred_nb <- predict(naive_bayes_model, newdata=test)
+cm_nb <- confusionMatrix(factor(pred_nb), reference=factor(test$target))$table
+acc_nb <- (cm_nb[1,1]+cm_nb[2,2])/sum(cm_nb)
+
+plot(roc(pred_nb, test$target), col="salmon", main="ROC Curve for Naive Bayes", print.auc=TRUE)
+auc_nb <- auc(roc(pred_nb, test$target))
+```
+
+Osiągnięte AUC na poziomie 64.8% jest nieco lepsze od AUC uzyskanego w metodzie knn. Można wyciągnąć zasadniczo takie same wnioski, jak w poprzednim przypadku - metoda jest trochę lepsza niż całkowicie losowe przyporządkowanie, choć nadal nie są to satysfakcjonujące wyniki.
+
+### QDA
+
+Analiza dyskryminacyjna jest metodą geometryczną, która polega na znalezieniu takiej hiperpłaszczyzny, która będzie jednocześnie maksymalizować odległość pomiędzy średnimi w grupach i minimalizować wariancję wewnątrzgrupową. Zakładamy przy tym, że zmienne pochodzą z rozkładu multinormalnego.
+
+QDA (Quadratic Discriminant Analysis), w odróżnieniu od LDA (Linear Discriminant Analysis) zakłada, że każda klasa $k$ ma własną macierz wariancji-kowariancji $\Sigma_k$. Dzięki temu QDA cechuje większa elastyczność. Jest to również lepsza metoda od LDA w przyapdku, gdy zbiór uczący jest duży.
+
+```{r, echo=FALSE, warning=FALSE, fig.align='center',inclue=TRUE,results=FALSE, message=FALSE}
+model_qda <- qda(train$target~., train)
+pred_qda <- predict(model_qda, test)
+#confusion matrix dla danych testowych
+m_qda <- table(pred_qda$class, test$target)
+acc_qda <- sum(m_qda[1,1]+m_qda[2,2])/sum(m_qda)
+
+plot(roc(pred_qda$class, test$target), col="orchid", main="ROC Curve for QDA", print.auc=TRUE)
+auc(roc(pred_qda$class, test$target))
+auc_qda <- roc(pred_qda$class, as.ordered(test$target))$auc
+```
+
+Osiągnięte AUC na poziomie 62.1% jest jak dotąd najsłabszym wynikiem, choć jest on zbliżony do wyników poprzednich dwóch metod.
+
+### Las losowy
+
+Drzewa decyzyjne, na których oparta jest metoda lasu losowego (Random Forest, RF), są obecnie bardzo popularną techniką analizy danych, zarówno dla zagadnień klasyfikacyjnych jak i dla regresji. Na każdym poziomie drzewa pytania dotyczą tylko jednej zmiennej.
+
+W przypadku drzew tworzonych dla zagadnień klasyfikacyjnych, jak w niniejszym projekcie, wybór reguł klasyfikacyjnych najczęściej opiera się o współczynnik Giniego, dany wzorem:
+
+$$G = \sum_{k=1}^K \hat{p}_{mk}(1-\hat{p}_{mk}) $$
+gdzie $\hat{p}_{mk}$-proporcja obserwacji uczących w $m$-tym regionie z $k$-tej klasy; alternatywą dla współczynnika Giniego jest entropia, dana wzorem:
+
+$$D = -\sum_{k=1}^K \hat{p}_{mk}log(\hat{p}_{mk}) $$
+(pod względem numerycznym obie wartości $G$ i $D$ są do siebie bardzo zbliżone.) Pojedyncze klasyfikacyjne drzewo decyzyjne dzieli dane według najsilniej różnicującej zmiennej.
+
+W procedurze RF tworzonych jest $n$-drzew. Aby uniknąć za każdym razem tego samego podziału, pojedyncze drzewo w lesie zamiast brać pod uwagę wszystkie zmienne objaśniające ($p$), ma losowany podzbiór zmiennych $m$ (zwykle $m\simeq\sqrt{p}$). Jest to ważna cecha RF, ponieważ przeciętnie $(p-m)/p$-podziałów nie będzie w ogóle uwzględniać zmiennej najsilniej różnicującej dane.
+
+W tym projekcie tworzonych jest 500 drzew z podzbiorem 3 zmiennych ($m=3$). Dodatkowo wyznaczany jest procentowy wpływ poszczególnych zmiennych na zmiany prawdopodobieństwa zostania targetem rekrutacji w metodzie RF.
+
+```{r, echo=FALSE, warning=FALSE, fig.align='center',inclue=TRUE,results=FALSE, message=FALSE}
+train$target <- as.factor(train$target)
+test$target <- as.factor(test$target)
+train_rf <- randomForest(target~., data=train,importance=TRUE, proximity=TRUE,
+                         ntree=500,mtry=3, nodesize=1)
+rf_prog <- predict(train_rf, newdata=test)
+rf_cm <- table(test$target, rf_prog)
+acc_rf <- sum(diag(rf_cm))/sum(rf_cm)
+
+roc_rf <- roc(test$target, as.numeric(rf_prog))
+plot(roc_rf, col="deepskyblue2", main="ROC Curve for Random Forest (n=500)", print.auc=TRUE)
+auc_rf <- auc(roc_rf)
+
+important <- importance(train_rf, type=1)
+
+Important_Features <- data.frame(Feature=row.names(important),Importance=important[,1])
+Important_Features$Importance<-Important_Features$Importance/sum(Important_Features$Importance)
+plot_ <- ggplot(Important_Features, aes(x= reorder(Feature, Importance) , y = Importance) ) +
+  geom_bar(stat="identity",fill="deepskyblue2",width=0.75) +
+  coord_flip() + xlab(NULL) + ylab(NULL) +
+  ggtitle("Procentowy wpływ zmiennych na prawdopodobieństwo\n zostania targetem rekrutacji w lesie losowym (500 drzew)") +
+  theme(plot.title = element_text(size=8)) + theme_minimal()
+plot_
+```
+Na koniec sprawdzona została lokalna stabilność dla dwóch obserwacji ze zbioru testowego:
+
+- Bob: mężczyzna posiadający doświadczenie zawodowe, nie zapisany na żadne studia, posiadający tytuł licencjata, którego główną dyscypliną jest STEM, posiadający między 10 a 15 lat doświadczenia zawodowego, który zmieniał pracę ostatni raz 4 lata temu i odbył 52 godziny szkoleń (w rzeczywistości Bob jest targetem),
+- Alice: kobieta posiadająca doświadczenie zawodowe, nie zapisana na żadne studia, posiadająca tytuł licencjata, której główną dyscypliną jest STEM, posiadająca między 10 a 15 lat doświadczenia zawodowego, która zmieniała pracę ostatni raz 3 lata temu i odbyła 54 godziny szkoleń (w rzeczywistości Alice nie jest targetem).
+
+Wykres dla Boba:
+```{r, echo=FALSE, warning=FALSE, fig.align='center',inclue=TRUE,results=FALSE, message=FALSE}
+Bob <- test[2,] #target=1
+Alice <- test[nrow(test)-1,] #target=0
+
+explain_rf <- DALEX::explain(model=train_rf, data=train[,-9], y=train$target=="1", label="Random Forest")
+predict(explain_rf, Bob)
+predict(explain_rf, Alice)
+
+cnames<-colnames(train)[-9]
+
+id_rf_Bob <- predict_diagnostics(explainer=explain_rf,
+                                 new_observation=Bob,
+                                 neighbors=33,
+                                 variables=cnames)
+plot(id_rf_Bob)
+```
+Co ciekawe, sytuację Boba mogłoby poprawić m. in. gdyby nie miał doświadczenia zawodowego i był zapisany na studia, miał niższe wykształcenie lub tytuł magistra.
+
+Wykres dla Alice:
+```{r, echo=FALSE, warning=FALSE, fig.align='center',inclue=TRUE,results=FALSE, message=FALSE}
+id_rf_Alice <- predict_diagnostics(explainer=explain_rf,
+                                 new_observation=Alice,
+                                 neighbors=33,
+                                 variables=cnames)
+plot(id_rf_Alice)
+```
+Dla Alice można wyciągnąć bardzo podobne wnioski co dla Boba: jej sytuację mogłoby poprawić np. zapisanie się na studia i brak doświadczenia zawodowego.
+
+Dla całego algorytmu RF mocno zaskakujący jest wynik AUC (53.9%), praktycznie równy losowemu przyporządkowaniu. Jest to sytuacja zdecydowanie nietypowa dla RF, który zwykle powinien dawać jedne z najlepszych wyników.
+
+## Podsumowanie
+
+Na koniec wykonano porównanie ACC i AUC na zbiorze testowym dla wybranych metod. Efekty zostały przedstawione na poniższym wykresie.
+
+```{r, echo=FALSE, warning=FALSE, fig.align='center'}
+ACC <- c(acc_knn, acc_nb, acc_qda, acc_rf)
+ACC <- round(ACC,3)
+AUC <- c(auc_knn, auc_nb, auc_qda, auc_rf)
+AUC <- round(AUC,3)
+names <- c("KNN","Naive Bayes","QDA","Random Forest")
+results <- data.frame(ACC,AUC,names)
+df2 <- melt(results, id.vars='names')
+
+ggplot(df2, aes(x=names, y=value, fill=variable)) +
+  geom_bar(stat='identity', position='dodge', width=0.8) +
+  labs(title="ACC and AUC for test set", x="Method", y="ACC / AUC") +
+  geom_text(aes(label=value),col="white", size=4, vjust=10, position=position_dodge(.8)) + theme_minimal()
+
+```
+
+Na podstawie całego badania można stwierdzić, że:
+
+- najlepsze wyniki, zarówno pod względem ACC jak i AUC, dała metoda naiwna Bayesa - wydaje się prawdopodobnym, że to wynika z faktu praktycznego spełnienia założenia o niezależności zmiennych (ponieważ korelacje pomiędzy wszystkimi zmiennymi były bardzo niskie),
+- w tuningowanej w I części metodzie KNN duża liczba sąsiadów, dla której ACC i AUC były najwyższe, prawdopodobnie wynika z faktu, że zbiór danych jest niezbilansowany,
+- o ile dokładności wszystkich metod są bardzo zbliżone, o tyle AUC są bardziej zróżnicowane,
+- szczególną uwagę przykuwa wyjątkowo słaby wynik RF - bardzo nietypowy dla tej metody, jak to zostało skomentowane w sekcji poświęconej temu algorytmowi.
+
+Ogólnie otrzymane wyniki trudno uznać za zadowalające. Są one generalnie lepsze od całkowicie losowego przyporządkowania (z wyjątkiem zaskakującego wyniku RF), jednak wszystkim modelom daleko do dobrych własności prognostycznych. Nie jest wykluczone, że uwzględnienie części zmiennych objaśniających usuniętych ostatecznie ze zbioru mogłoby pozytywnie wpłynąć na własności prognostyczne. Z drugiej strony wpływ mógł też mieć brak zbilansowania danych - alternatywnym rozwiązaniem mógłby być oversampling.
+
+Z perspektywy firmy, która, budując takie modele, chciałaby wspomóc swoje procesy rekrutacyjne, nie wygląda to najbardziej optymistycznie. Prawdopodobnie aby poprawić własności prognostyczne, firma musiałaby gromadzić inne dane o kandydatach, np. więcej zmiennych numerycznych (takich jak chociażby liczba projektów Data Science, w których uczestniczył dany kandydat, średnia ocen ze studiów czy inne tego typu cechy), lub też musiałaby zadbać o wykonanie oversamplingu dla lepszego zrównoważenia zbioru, na którym miałaby uczyć model. 
